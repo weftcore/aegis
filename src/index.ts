@@ -1,8 +1,11 @@
 /**
- * @weftcore/security
- * Universal client-side runtime security guard.
+ * @weftcore/aegis
+ * Universal client-side runtime security guard & anti-reverse engineering suite.
  * Zero hardcoded domains — fully configurable for any project.
  */
+
+import { detectStealthBot } from './fingerprint';
+import { installHoneypots } from './honeypot';
 
 declare const process: any;
 
@@ -23,8 +26,10 @@ export interface SecurityGuardOptions {
   antiDebugIntervalMs?: number;
   /** Protect source from automated code extraction and AI decompilers. Defaults to true. */
   antiSourceExtraction?: boolean;
-  /** Detect and block headless browser automation. Defaults to true. */
+  /** Detect and block headless browser automation and stealth scrapers. Defaults to true. */
   antiHeadless?: boolean;
+  /** Deploy decoy honeypot globals to detect AI scanners (like REA). Defaults to true. */
+  antiAiScanners?: boolean;
   /** Prevent right-click context menu and keyboard shortcuts for View Source / DevTools. Defaults to true. */
   blockDevShortcuts?: boolean;
   /** Objects to deep-freeze against runtime monkey-patching. */
@@ -37,15 +42,26 @@ export type ViolationType =
   | 'frame-violation'
   | 'debugger-detected'
   | 'headless-detected'
+  | 'stealth-bot-detected'
+  | 'honeypot-triggered'
   | 'source-extraction'
   | 'devtools-shortcut'
   | 'tampering-detected';
+
+// ─── Re-exports of Sub-Modules ─────────────────────────────────
+
+export * from './storage';
+export * from './signer';
+export * from './fingerprint';
+export * from './honeypot';
+export { aegisPlugin } from './plugin';
 
 // ─── Guard State ───────────────────────────────────────────────
 
 let _initialized = false;
 let _options: SecurityGuardOptions = {};
 let _antiDebugTimer: number | undefined;
+let _cleanupHoneypots: (() => void) | undefined;
 
 // ─── Main Entry ────────────────────────────────────────────────
 
@@ -75,7 +91,7 @@ export function initSecurityGuard(options: SecurityGuardOptions = {}): void {
     }
   }
 
-  // Production-only layers
+  // Production-only active defenses
   if (isProd) {
     // Layer 3: Console silencing
     if (options.silenceConsole !== false) {
@@ -92,14 +108,28 @@ export function initSecurityGuard(options: SecurityGuardOptions = {}): void {
       _installAntiSourceExtraction();
     }
 
-    // Layer 6: Headless / automation detection
+    // Layer 6: Headless / automation detection & stealth hardware check
     if (options.antiHeadless !== false) {
       _detectHeadless();
+      const botResult = detectStealthBot();
+      if (botResult.isBot) {
+        _fireViolation('stealth-bot-detected', botResult.reasons.join(', '));
+      }
     }
 
     // Layer 7: Block DevTools keyboard shortcuts + right-click
     if (options.blockDevShortcuts !== false) {
       _blockDevShortcuts();
+    }
+
+    // Layer 8: AI Reconnaissance Honeypots
+    if (options.antiAiScanners !== false) {
+      _cleanupHoneypots = installHoneypots({
+        onTrigger: (name) => {
+          _fireViolation('honeypot-triggered', name);
+          _onDebugDetected();
+        },
+      });
     }
   }
 }
@@ -112,6 +142,10 @@ export function destroySecurityGuard(): void {
   if (_antiDebugTimer !== undefined) {
     clearInterval(_antiDebugTimer);
     _antiDebugTimer = undefined;
+  }
+  if (_cleanupHoneypots) {
+    _cleanupHoneypots();
+    _cleanupHoneypots = undefined;
   }
   _cleanupListeners.forEach((fn) => fn());
   _cleanupListeners.length = 0;
@@ -178,21 +212,25 @@ function _silenceConsole(): void {
   const noop = () => {};
   const methods = ['log', 'info', 'debug', 'table', 'dir', 'trace', 'group', 'groupEnd'] as const;
   for (const m of methods) {
-    try { (console as any)[m] = noop; } catch { /* frozen env */ }
+    try {
+      (console as any)[m] = noop;
+    } catch {
+      /* frozen env */
+    }
   }
 }
 
 // ─── Layer 4: Anti-Debugging ───────────────────────────────────
 
 export function startAntiDebug(intervalMs = 2000): number {
-  // Multi-vector debugger detection
   const check = () => {
     // Vector 1: Timing-based debugger statement detection
     const t0 = performance.now();
     try {
-      // Dynamic constructor prevents static AST strippers from removing the debugger keyword
       (function () {}.constructor('debugger')());
-    } catch { /* noop */ }
+    } catch {
+      /* noop */
+    }
     const elapsed = performance.now() - t0;
 
     if (elapsed > 80) {
@@ -200,24 +238,26 @@ export function startAntiDebug(intervalMs = 2000): number {
       _onDebugDetected();
     }
 
-    // Vector 2: Detect element inspection via DOM element trick
-    // When DevTools is open and inspecting, accessing .id on a logged element triggers a getter
+    // Vector 2: Detect element inspection via DOM element getter trick
     try {
       const el = new Image();
       let devtoolsOpen = false;
       Object.defineProperty(el, 'id', {
-        get: () => { devtoolsOpen = true; return ''; },
+        get: () => {
+          devtoolsOpen = true;
+          return '';
+        },
       });
-      // The getter fires only if DevTools console evaluates the object
       console.debug(el);
       if (devtoolsOpen) {
         _fireViolation('debugger-detected', 'console-inspect');
         _onDebugDetected();
       }
-    } catch { /* noop */ }
+    } catch {
+      /* noop */
+    }
   };
 
-  // Run immediately, then on interval
   check();
   return window.setInterval(check, intervalMs);
 }
@@ -229,35 +269,27 @@ function _onDebugDetected(): void {
 }
 
 // ─── Layer 5: Anti-Source Extraction ───────────────────────────
-// Defeats: REA (morluto/rea), AI decompilers, headless scrapers, source-map harvesters
 
 function _installAntiSourceExtraction(): void {
-  // 5a: Intercept and poison Function.prototype.toString
-  // REA and AI tools call .toString() on functions to read source. Return opaque output.
   try {
     const originalToString = Function.prototype.toString;
     const guardedToString = function (this: Function): string {
-      // Allow native functions to return their normal string
       const original = originalToString.call(this);
       if (original.includes('[native code]')) return original;
-      // Return opaque signature for all user-defined functions
       _fireViolation('source-extraction', 'toString');
       return 'function () { [secure] }';
     };
-    // Apply the override, and make it look native
     Function.prototype.toString = guardedToString;
-    // Make our override's own toString return native-looking output
     guardedToString.toString = () => 'function toString() { [native code] }';
-  } catch { /* frozen prototype env */ }
+  } catch {
+    /* frozen prototype env */
+  }
 
-  // 5b: Block .map / source map requests via Service Worker interception isn't possible,
-  // but we can delete sourceURL/sourceMappingURL pragmas at runtime and override Error.stack
   try {
     const origPrepareStackTrace = (Error as any).prepareStackTrace;
     (Error as any).prepareStackTrace = function (err: Error, stack: any[]) {
       if (origPrepareStackTrace) {
         const result = origPrepareStackTrace(err, stack);
-        // Strip file paths from stack traces
         if (typeof result === 'string') {
           return result.replace(/https?:\/\/[^\s)]+/g, '[redacted]');
         }
@@ -265,15 +297,12 @@ function _installAntiSourceExtraction(): void {
       }
       return err.toString();
     };
-  } catch { /* V8-only */ }
+  } catch {
+    /* V8-only */
+  }
 
-  // 5c: Trap property enumeration on window and key globals
-  // AI agents enumerate window properties to discover API surfaces
   try {
-    const sensitiveKeys = new Set([
-      'authClient', 'AuthProvider', 'useAuth', 'TOKEN', 'REFRESH_TOKEN',
-    ]);
-    // Intercept Object.keys/getOwnPropertyNames on window to hide sensitive globals
+    const sensitiveKeys = new Set(['authClient', 'AuthProvider', 'useAuth', 'TOKEN', 'REFRESH_TOKEN']);
     const origKeys = Object.keys;
     Object.keys = function <T extends object>(obj: T): string[] {
       const result = origKeys.call(Object, obj);
@@ -282,9 +311,10 @@ function _installAntiSourceExtraction(): void {
       }
       return result;
     } as typeof Object.keys;
-  } catch { /* noop */ }
+  } catch {
+    /* noop */
+  }
 
-  // 5d: Mutation observer — detect DOM-based extraction scripts injecting elements
   try {
     const observer = new MutationObserver((mutations) => {
       for (const m of mutations) {
@@ -298,7 +328,9 @@ function _installAntiSourceExtraction(): void {
     });
     observer.observe(document.documentElement, { childList: true, subtree: true });
     _cleanupListeners.push(() => observer.disconnect());
-  } catch { /* noop */ }
+  } catch {
+    /* noop */
+  }
 }
 
 function _isTrustedScript(src: string): boolean {
@@ -306,7 +338,7 @@ function _isTrustedScript(src: string): boolean {
     const url = new URL(src);
     return url.origin === window.location.origin;
   } catch {
-    return true; // Relative URL = same origin
+    return true;
   }
 }
 
@@ -315,13 +347,11 @@ function _isTrustedScript(src: string): boolean {
 function _detectHeadless(): void {
   const flags: string[] = [];
 
-  // Navigator signals
   if (navigator.webdriver) flags.push('webdriver');
   if ((navigator as any).plugins?.length === 0) flags.push('no-plugins');
   if (/HeadlessChrome/i.test(navigator.userAgent)) flags.push('headless-ua');
   if (!(window as any).chrome && /Chrome/.test(navigator.userAgent)) flags.push('fake-chrome');
 
-  // Puppeteer / Playwright injection markers
   const automationProps = [
     '__webdriver_evaluate', '__selenium_evaluate', '__webdriver_script_function',
     '__webdriver_script_func', '__webdriver_script_fn', '__fxdriver_evaluate',
@@ -338,18 +368,6 @@ function _detectHeadless(): void {
     }
   }
 
-  // Permission API behavior (headless often has inconsistent permissions)
-  if (navigator.permissions) {
-    navigator.permissions.query({ name: 'notifications' as PermissionName }).then((p) => {
-      if (Notification.permission === 'denied' && p.state === 'prompt') {
-        flags.push('perm-inconsistency');
-      }
-      if (flags.length > 0) {
-        _fireViolation('headless-detected', flags.join(', '));
-      }
-    }).catch(() => { /* noop */ });
-  }
-
   if (flags.length > 0) {
     _fireViolation('headless-detected', flags.join(', '));
   }
@@ -359,19 +377,16 @@ function _detectHeadless(): void {
 
 function _blockDevShortcuts(): void {
   const onKeyDown = (e: KeyboardEvent) => {
-    // F12
     if (e.key === 'F12') {
       e.preventDefault();
       _fireViolation('devtools-shortcut', 'F12');
       return;
     }
-    // Ctrl+Shift+I / Ctrl+Shift+J / Ctrl+Shift+C (DevTools)
     if (e.ctrlKey && e.shiftKey && ['I', 'J', 'C'].includes(e.key.toUpperCase())) {
       e.preventDefault();
       _fireViolation('devtools-shortcut', `Ctrl+Shift+${e.key.toUpperCase()}`);
       return;
     }
-    // Ctrl+U (View Source)
     if (e.ctrlKey && e.key.toUpperCase() === 'U') {
       e.preventDefault();
       _fireViolation('devtools-shortcut', 'Ctrl+U');

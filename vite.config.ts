@@ -4,13 +4,16 @@ import { resolve } from 'path';
 export default defineConfig({
   build: {
     lib: {
-      entry: resolve(import.meta.dirname, 'src/index.ts'),
+      entry: {
+        index: resolve(import.meta.dirname, 'src/index.ts'),
+        plugin: resolve(import.meta.dirname, 'src/plugin.ts'),
+      },
       name: 'WeftcoreAegis',
       formats: ['es', 'cjs'],
-      fileName: (format) => (format === 'es' ? 'index.js' : 'index.cjs'),
+      fileName: (format, entryName) =>
+        format === 'es' ? `${entryName}.js` : `${entryName}.cjs`,
     },
     sourcemap: false,
     emptyOutDir: true,
   },
 });
-
