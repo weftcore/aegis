@@ -15,5 +15,10 @@ export default defineConfig({
     },
     sourcemap: false,
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        exports: 'named',
+      },
+    },
   },
 });

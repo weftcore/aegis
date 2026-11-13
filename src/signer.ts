@@ -134,3 +134,4 @@ export async function verifySignature(
 
   return signature === expectedHeaders[`${prefix}-Signature`];
 }
+

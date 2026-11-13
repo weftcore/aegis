@@ -61,3 +61,4 @@ export function aegisPlugin(options: AegisPluginOptions = {}) {
 }
 
 export default aegisPlugin;
+
