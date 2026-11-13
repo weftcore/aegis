@@ -1,0 +1,51 @@
+{
+  "name": "@weftcore/aegis",
+  "version": "1.0.0",
+  "description": "Universal client-side runtime security guard and anti-reverse-engineering suite. Protects against DevTools inspection, headless scraping, AI decompilers, source extraction, and unauthorized iframe embedding.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "vite build && tsc --emitDeclarationOnly",
+    "dev": "vite build --watch"
+  },
+  "keywords": [
+    "security",
+    "anti-debug",
+    "anti-reverse-engineering",
+    "anti-tampering",
+    "obfuscation",
+    "devtools-detection",
+    "headless-detection",
+    "clickjacking",
+    "frame-guard",
+    "source-protection"
+  ],
+  "author": "weftcore",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/weftcore/aegis.git"
+  },
+  "homepage": "https://github.com/weftcore/aegis#readme",
+  "bugs": {
+    "url": "https://github.com/weftcore/aegis/issues"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  }
+}
