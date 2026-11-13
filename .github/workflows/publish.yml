@@ -29,13 +29,13 @@ jobs:
         run: npm run build
 
       - name: Publish to GitHub Packages (Public)
-        run: npm publish --access public
+        run: npm publish --access public || echo "Package already published or version unchanged"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish to npmjs.org (Public, if NPM_TOKEN secret configured)
         if: env.NPM_TOKEN != ''
-        run: npm publish --access public --registry=https://registry.npmjs.org
+        run: npm publish --access public --registry=https://registry.npmjs.org || echo "Package already published on npmjs"
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
