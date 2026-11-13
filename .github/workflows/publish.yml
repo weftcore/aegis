@@ -1,4 +1,4 @@
-name: Publish Aegis to GitHub Packages
+name: Publish Aegis (Public Package)
 
 on:
   push:
@@ -15,7 +15,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node.js (GitHub Packages)
         uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -28,7 +28,14 @@ jobs:
       - name: Build package
         run: npm run build
 
-      - name: Publish to GitHub Packages
-        run: npm publish
+      - name: Publish to GitHub Packages (Public)
+        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to npmjs.org (Public, if NPM_TOKEN secret configured)
+        if: env.NPM_TOKEN != ''
+        run: npm publish --access public --registry=https://registry.npmjs.org
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
