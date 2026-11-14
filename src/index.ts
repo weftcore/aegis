@@ -316,9 +316,7 @@ export function startAntiDebug(options: AntiDebugOptions | number = 1500): numbe
 }
 
 function _onThreatDetected(): void {
-  try { sessionStorage.clear(); } catch { /* noop */ }
-  try { localStorage.removeItem('TOKEN'); } catch { /* noop */ }
-  try { localStorage.removeItem('REFRESH_TOKEN'); } catch { /* noop */ }
+  // Notify violation handler; do not unilaterally delete user tokens from storage
 }
 
 // ─── Layer 5: Prototype Sealing & Anti-Source Extraction ───────
@@ -480,6 +478,12 @@ function _blockDevShortcuts(): void {
 
 function _isDev(): boolean {
   try {
+    if (typeof window !== 'undefined' && window.location) {
+      const host = window.location.hostname;
+      if (host === 'localhost' || host === '127.0.0.1' || host.endsWith('.local')) {
+        return true;
+      }
+    }
     return typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production';
   } catch {
     return false;
