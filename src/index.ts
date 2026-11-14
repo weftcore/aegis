@@ -4,7 +4,7 @@
  * Zero hardcoded domains — fully configurable for any project.
  */
 
-import { detectStealthBot } from './fingerprint';
+import { detectStealthBot, type BotDetectionResult } from './fingerprint';
 import { installHoneypots } from './honeypot';
 
 declare const process: any;
@@ -14,23 +14,27 @@ declare const process: any;
 export interface SecurityGuardOptions {
   /** Allowed iframe ancestor origins. Pass a RegExp, string[], or omit to block all framing. */
   allowedOrigins?: RegExp | string[];
-  /** Where to redirect if framed by an unauthorized host. Required if allowedOrigins is set. */
+  /** Where to redirect if framed by an unauthorized host or upon severe security breach. */
   unauthorizedRedirectUrl?: string;
   /** Allow localhost/127.0.0.1 framing in development mode. Defaults to true. */
   allowLocalhostInDev?: boolean;
   /** Silence console.log/info/debug/table/dir in production. Defaults to true. */
   silenceConsole?: boolean;
-  /** Run active debugger trap loop in production. Defaults to true. */
+  /** Run active multi-vector debugger and DevTools detection in production. Defaults to true. */
   antiDebug?: boolean;
-  /** Debugger trap check interval in ms. Defaults to 2000. */
+  /** Check interval in ms for DevTools detection. Defaults to 1500. */
   antiDebugIntervalMs?: number;
-  /** Protect source from automated code extraction and AI decompilers. Defaults to true. */
+  /** Enable docked DevTools dimension differential detection. Defaults to true. */
+  detectDevToolsDimensions?: boolean;
+  /** Enable background Web Worker heartbeat debugger trap. Defaults to true. */
+  enableWorkerHeartbeat?: boolean;
+  /** Protect prototypes from clean iframe extraction and unauthorized script injection. Defaults to true. */
   antiSourceExtraction?: boolean;
-  /** Detect and block headless browser automation and stealth scrapers. Defaults to true. */
+  /** Detect and flag headless browser automation, Puppeteer, and Selenium. Defaults to true. */
   antiHeadless?: boolean;
-  /** Deploy decoy honeypot globals to detect AI scanners (like REA). Defaults to true. */
+  /** Deploy synthetic AI reconnaissance honeypots. Defaults to true. */
   antiAiScanners?: boolean;
-  /** Prevent right-click context menu and keyboard shortcuts for View Source / DevTools. Defaults to true. */
+  /** Prevent right-click context menu and keyboard shortcuts for DevTools. Defaults to true. */
   blockDevShortcuts?: boolean;
   /** Objects to deep-freeze against runtime monkey-patching. */
   freezeTargets?: object[];
@@ -41,11 +45,13 @@ export interface SecurityGuardOptions {
 export type ViolationType =
   | 'frame-violation'
   | 'debugger-detected'
+  | 'devtools-opened'
   | 'headless-detected'
   | 'stealth-bot-detected'
   | 'honeypot-triggered'
   | 'source-extraction'
   | 'devtools-shortcut'
+  | 'prototype-tampering'
   | 'tampering-detected';
 
 // ─── Re-exports of Sub-Modules ─────────────────────────────────
@@ -54,7 +60,7 @@ export * from './storage';
 export * from './signer';
 export * from './fingerprint';
 export * from './honeypot';
-export { aegisPlugin } from './plugin';
+export { aegisPlugin, scrambleString, decodeString } from './plugin';
 
 // ─── Guard State ───────────────────────────────────────────────
 
@@ -62,6 +68,8 @@ let _initialized = false;
 let _options: SecurityGuardOptions = {};
 let _antiDebugTimer: number | undefined;
 let _cleanupHoneypots: (() => void) | undefined;
+let _workerHeartbeat: Worker | undefined;
+const _cleanupListeners: Array<() => void> = [];
 
 // ─── Main Entry ────────────────────────────────────────────────
 
@@ -75,7 +83,7 @@ export function initSecurityGuard(options: SecurityGuardOptions = {}): void {
 
   const isProd = !_isDev();
 
-  // Layer 1: Frame Guard (always active)
+  // Layer 1: Frame Guard (active in all modes)
   if (options.allowedOrigins) {
     enforceFrameGuard({
       allowedOrigins: options.allowedOrigins,
@@ -84,7 +92,7 @@ export function initSecurityGuard(options: SecurityGuardOptions = {}): void {
     });
   }
 
-  // Layer 2: Freeze targets
+  // Layer 2: Deep Freeze targets
   if (Array.isArray(options.freezeTargets)) {
     for (const t of options.freezeTargets) {
       if (t && typeof t === 'object') deepFreeze(t);
@@ -98,26 +106,30 @@ export function initSecurityGuard(options: SecurityGuardOptions = {}): void {
       _silenceConsole();
     }
 
-    // Layer 4: Anti-debugging
+    // Layer 4: Anti-debugging & DevTools dimension detection
     if (options.antiDebug !== false) {
-      _antiDebugTimer = startAntiDebug(options.antiDebugIntervalMs ?? 2000);
+      _antiDebugTimer = startAntiDebug({
+        intervalMs: options.antiDebugIntervalMs ?? 1500,
+        detectDimensions: options.detectDevToolsDimensions !== false,
+        enableWorker: options.enableWorkerHeartbeat !== false,
+      });
     }
 
-    // Layer 5: Anti-source extraction (defeats REA, AI decompilers, source map scrapers)
+    // Layer 5: Prototype sealing & clean-iframe extraction prevention
     if (options.antiSourceExtraction !== false) {
       _installAntiSourceExtraction();
     }
 
-    // Layer 6: Headless / automation detection & stealth hardware check
+    // Layer 6: Headless / automation detection & hardware evaluation
     if (options.antiHeadless !== false) {
       _detectHeadless();
-      const botResult = detectStealthBot();
+      const botResult: BotDetectionResult = detectStealthBot();
       if (botResult.isBot) {
         _fireViolation('stealth-bot-detected', botResult.reasons.join(', '));
       }
     }
 
-    // Layer 7: Block DevTools keyboard shortcuts + right-click
+    // Layer 7: Block DevTools shortcuts and right-click
     if (options.blockDevShortcuts !== false) {
       _blockDevShortcuts();
     }
@@ -125,9 +137,9 @@ export function initSecurityGuard(options: SecurityGuardOptions = {}): void {
     // Layer 8: AI Reconnaissance Honeypots
     if (options.antiAiScanners !== false) {
       _cleanupHoneypots = installHoneypots({
-        onTrigger: (name) => {
-          _fireViolation('honeypot-triggered', name);
-          _onDebugDetected();
+        onTrigger: (name, detail) => {
+          _fireViolation('honeypot-triggered', `${name}:${detail || ''}`);
+          _onThreatDetected();
         },
       });
     }
@@ -135,13 +147,17 @@ export function initSecurityGuard(options: SecurityGuardOptions = {}): void {
 }
 
 /**
- * Tear down the guard (useful for testing). Removes all listeners and timers.
+ * Tear down the guard (useful for tests). Removes all listeners and timers.
  */
 export function destroySecurityGuard(): void {
   _initialized = false;
   if (_antiDebugTimer !== undefined) {
     clearInterval(_antiDebugTimer);
     _antiDebugTimer = undefined;
+  }
+  if (_workerHeartbeat) {
+    _workerHeartbeat.terminate();
+    _workerHeartbeat = undefined;
   }
   if (_cleanupHoneypots) {
     _cleanupHoneypots();
@@ -161,7 +177,7 @@ export function enforceFrameGuard(config: {
   if (typeof window === 'undefined') return;
 
   try {
-    if (window.self === window.top) return; // Not framed
+    if (window.self === window.top) return; // Not embedded in an iframe
 
     const referrer = document.referrer ? new URL(document.referrer).origin : '';
     let allowed = false;
@@ -179,15 +195,14 @@ export function enforceFrameGuard(config: {
     }
 
     if (!allowed) {
-      _fireViolation('frame-violation', referrer);
+      _fireViolation('frame-violation', referrer || 'unknown-origin');
       document.documentElement.innerHTML = '';
       if (config.redirectUrl && window.top) {
         window.top.location.href = config.redirectUrl;
       }
     }
   } catch {
-    // Cross-origin frame access denied → unauthorized embedding
-    _fireViolation('frame-violation', 'cross-origin');
+    _fireViolation('frame-violation', 'cross-origin-blocked');
     document.documentElement.innerHTML = '';
   }
 }
@@ -215,16 +230,73 @@ function _silenceConsole(): void {
     try {
       (console as any)[m] = noop;
     } catch {
-      /* frozen env */
+      /* frozen environment */
     }
   }
 }
 
-// ─── Layer 4: Anti-Debugging ───────────────────────────────────
+// ─── Layer 4: Anti-Debugging & DevTools Detection ──────────────
 
-export function startAntiDebug(intervalMs = 2000): number {
+export interface AntiDebugOptions {
+  intervalMs?: number;
+  detectDimensions?: boolean;
+  enableWorker?: boolean;
+}
+
+export function startAntiDebug(options: AntiDebugOptions | number = 1500): number {
+  const opts: AntiDebugOptions = typeof options === 'number' ? { intervalMs: options } : options;
+  const intervalMs = opts.intervalMs ?? 1500;
+
+  // 1. Web Worker Heartbeat (Off-thread detection)
+  if (opts.enableWorker !== false && typeof Worker !== 'undefined' && typeof Blob !== 'undefined') {
+    try {
+      const workerBlob = new Blob(
+        [
+          `let lastHeartbeat = Date.now();
+           self.onmessage = function(e) {
+             if (e.data === 'pong') lastHeartbeat = Date.now();
+           };
+           setInterval(function() {
+             self.postMessage('ping');
+             if (Date.now() - lastHeartbeat > 3500) {
+               self.postMessage('detected');
+             }
+           }, 1000);`,
+        ],
+        { type: 'application/javascript' }
+      );
+      const workerUrl = URL.createObjectURL(workerBlob);
+      _workerHeartbeat = new Worker(workerUrl);
+      _workerHeartbeat.onmessage = (e) => {
+        if (e.data === 'ping') {
+          _workerHeartbeat?.postMessage('pong');
+        } else if (e.data === 'detected') {
+          _fireViolation('debugger-detected', 'worker-heartbeat-stalled');
+          _onThreatDetected();
+        }
+      };
+      _cleanupListeners.push(() => {
+        _workerHeartbeat?.terminate();
+        URL.revokeObjectURL(workerUrl);
+      });
+    } catch {
+      /* Worker disabled by CSP */
+    }
+  }
+
   const check = () => {
-    // Vector 1: Timing-based debugger statement detection
+    // 2. Docked DevTools Dimension Differential Check (Gold Standard)
+    if (opts.detectDimensions !== false && typeof window !== 'undefined') {
+      const widthDiff = window.outerWidth - window.innerWidth;
+      const heightDiff = window.outerHeight - window.innerHeight;
+      // When DevTools is docked to side or bottom, threshold typically exceeds 160px
+      if (widthDiff > 160 || heightDiff > 160) {
+        _fireViolation('devtools-opened', `docked: wDiff=${widthDiff}, hDiff=${heightDiff}`);
+        _onThreatDetected();
+      }
+    }
+
+    // 3. Timing-Based Debugger Trap
     const t0 = performance.now();
     try {
       (function () {}.constructor('debugger')());
@@ -234,27 +306,8 @@ export function startAntiDebug(intervalMs = 2000): number {
     const elapsed = performance.now() - t0;
 
     if (elapsed > 80) {
-      _fireViolation('debugger-detected', `latency=${elapsed.toFixed(0)}ms`);
-      _onDebugDetected();
-    }
-
-    // Vector 2: Detect element inspection via DOM element getter trick
-    try {
-      const el = new Image();
-      let devtoolsOpen = false;
-      Object.defineProperty(el, 'id', {
-        get: () => {
-          devtoolsOpen = true;
-          return '';
-        },
-      });
-      console.debug(el);
-      if (devtoolsOpen) {
-        _fireViolation('debugger-detected', 'console-inspect');
-        _onDebugDetected();
-      }
-    } catch {
-      /* noop */
+      _fireViolation('debugger-detected', `debugger-latency=${elapsed.toFixed(0)}ms`);
+      _onThreatDetected();
     }
   };
 
@@ -262,29 +315,30 @@ export function startAntiDebug(intervalMs = 2000): number {
   return window.setInterval(check, intervalMs);
 }
 
-function _onDebugDetected(): void {
+function _onThreatDetected(): void {
   try { sessionStorage.clear(); } catch { /* noop */ }
   try { localStorage.removeItem('TOKEN'); } catch { /* noop */ }
   try { localStorage.removeItem('REFRESH_TOKEN'); } catch { /* noop */ }
 }
 
-// ─── Layer 5: Anti-Source Extraction ───────────────────────────
+// ─── Layer 5: Prototype Sealing & Anti-Source Extraction ───────
 
 function _installAntiSourceExtraction(): void {
+  // 1. Protect Function.prototype.toString
   try {
     const originalToString = Function.prototype.toString;
     const guardedToString = function (this: Function): string {
       const original = originalToString.call(this);
       if (original.includes('[native code]')) return original;
-      _fireViolation('source-extraction', 'toString');
-      return 'function () { [secure] }';
+      return 'function () { [native code] }';
     };
     Function.prototype.toString = guardedToString;
     guardedToString.toString = () => 'function toString() { [native code] }';
   } catch {
-    /* frozen prototype env */
+    /* frozen prototype */
   }
 
+  // 2. Protect Error.prepareStackTrace from leaking internal bundle paths
   try {
     const origPrepareStackTrace = (Error as any).prepareStackTrace;
     (Error as any).prepareStackTrace = function (err: Error, stack: any[]) {
@@ -298,23 +352,34 @@ function _installAntiSourceExtraction(): void {
       return err.toString();
     };
   } catch {
-    /* V8-only */
+    /* V8 only */
   }
 
+  // 3. Iframe Sandbox Prototype Guard
+  // Prevents attackers from creating a hidden iframe to extract clean un-guarded prototypes!
   try {
-    const sensitiveKeys = new Set(['authClient', 'AuthProvider', 'useAuth', 'TOKEN', 'REFRESH_TOKEN']);
-    const origKeys = Object.keys;
-    Object.keys = function <T extends object>(obj: T): string[] {
-      const result = origKeys.call(Object, obj);
-      if (obj === window) {
-        return result.filter((k) => !sensitiveKeys.has(k));
+    const origCreateElement = document.createElement.bind(document);
+    document.createElement = function (tagName: string, options?: ElementCreationOptions): any {
+      const element = origCreateElement(tagName, options);
+      if (typeof tagName === 'string' && tagName.toLowerCase() === 'iframe') {
+        element.addEventListener('load', () => {
+          try {
+            const iframeWin = (element as HTMLIFrameElement).contentWindow as any;
+            if (iframeWin && iframeWin.Function) {
+              iframeWin.Function.prototype.toString = Function.prototype.toString;
+            }
+          } catch {
+            /* Cross-origin iframe */
+          }
+        });
       }
-      return result;
-    } as typeof Object.keys;
+      return element;
+    } as any;
   } catch {
     /* noop */
   }
 
+  // 4. MutationObserver to block unauthorized external script injections
   try {
     const observer = new MutationObserver((mutations) => {
       for (const m of mutations) {
@@ -363,7 +428,7 @@ function _detectHeadless(): void {
   ];
 
   for (const prop of automationProps) {
-    if (prop in window || prop in document) {
+    if (prop in window || (document && prop in document)) {
       flags.push(prop);
     }
   }
@@ -377,19 +442,22 @@ function _detectHeadless(): void {
 
 function _blockDevShortcuts(): void {
   const onKeyDown = (e: KeyboardEvent) => {
+    // F12
     if (e.key === 'F12') {
       e.preventDefault();
       _fireViolation('devtools-shortcut', 'F12');
       return;
     }
-    if (e.ctrlKey && e.shiftKey && ['I', 'J', 'C'].includes(e.key.toUpperCase())) {
+    // Ctrl+Shift+I, Ctrl+Shift+J, Ctrl+Shift+C (or Cmd+Option on Mac)
+    if ((e.ctrlKey || e.metaKey) && (e.shiftKey || e.altKey) && ['I', 'J', 'C'].includes(e.key.toUpperCase())) {
       e.preventDefault();
-      _fireViolation('devtools-shortcut', `Ctrl+Shift+${e.key.toUpperCase()}`);
+      _fireViolation('devtools-shortcut', `DevTools-${e.key.toUpperCase()}`);
       return;
     }
-    if (e.ctrlKey && e.key.toUpperCase() === 'U') {
+    // Ctrl+U / Cmd+U (View Source)
+    if ((e.ctrlKey || e.metaKey) && e.key.toUpperCase() === 'U') {
       e.preventDefault();
-      _fireViolation('devtools-shortcut', 'Ctrl+U');
+      _fireViolation('devtools-shortcut', 'ViewSource');
       return;
     }
   };
@@ -409,8 +477,6 @@ function _blockDevShortcuts(): void {
 }
 
 // ─── Internal Utilities ────────────────────────────────────────
-
-const _cleanupListeners: Array<() => void> = [];
 
 function _isDev(): boolean {
   try {

@@ -10,15 +10,15 @@ Zero hardcoded domains. Zero dependencies. Works with **any** web app, framework
 
 | Threat | Module | How It Works |
 |---|---|---|
-| **REA / AI Code Scanners** | Anti-Source & Honeypots | Poisons `Function.prototype.toString()` to return `[secure]`, strips Error stacks, deploys bait proxy getters that trigger on AI property scanning. |
-| **DevTools Inspection** | Anti-Debug | Staggered timing-based debugger traps + DOM property getter evaluation to detect and halt DevTools inspection. |
-| **Token Theft / Memory Dumps** | Secure Storage Enclave | Transparently encrypts `localStorage`/`sessionStorage` with AES-GCM (Web Crypto API) so stored tokens are encrypted ciphertext. |
-| **API Tampering & Replay Attacks** | Dynamic Request Signer | Automatically signs outgoing HTTP requests with HMAC-SHA256 nonces and timestamps. Server-side verifier included. |
-| **Stealth Bots & Headless Scrapers** | Stealth Bot Detector | Detects Puppeteer-stealth and undetected-chromedriver using GPU software rasterizer checks (SwiftShader/llvmpipe) and screen dimension tests. |
-| **Unauthorized Iframe Embedding** | Frame Guard | Validates `document.referrer` against user-configured allowed origins and immediately clears the DOM and redirects. |
-| **Runtime Monkey-Patching** | Deep Freeze | Recursively freezes API clients and config objects to block client-side method overrides. |
-| **Console Data Harvesting** | Console Silencing | Silences `console.log/info/debug/table/dir/trace` in production builds. |
-| **Build-Time Obfuscation** | Bundler Plugin | Vite & Rspack/Webpack plugin to strip console statements and inject runtime preambles automatically. |
+| **DevTools Inspection** | Multi-Vector Anti-Debug | Docked dimension differential checks (`outerWidth - innerWidth > 160`), Web Worker heartbeat monitor, and active timing traps. |
+| **Iframe Prototype Leaks** | Iframe Prototype Shield | Intercepts `document.createElement('iframe')` and poisons clean prototype extraction to prevent bypasses. |
+| **Token Theft & Memory Dumps** | Non-Extractable Key Enclave | Uses true non-extractable WebCrypto keys (`extractable: false`) stored in IndexedDB with 96-bit random IVs and AES-GCM (256-bit). |
+| **API Replay & Mass Scraping** | Signer & Micro Proof-of-Work | Signs requests with HMAC-SHA256 and client-side micro-PoW hashcash puzzles that throttle automated bots. |
+| **Stealth Bots & Headless Scrapers** | Hardware & DSP Fingerprint | AudioContext floating-point DSP variance, Canvas 2D winding geometry, WebGL software rasterizer & shader precision analysis. |
+| **AI Reconnaissance & Scanners** | Multi-Scope Honeypots | Global window & hidden DOM decoy traps returning synthetic poisoning payloads to waste scanner tokens and alert telemetry. |
+| **Unauthorized Framing** | Frame Guard | Strict ancestor and document.referrer validation with automatic DOM wiping and redirect. |
+| **Runtime Monkey-Patching** | Deep Freeze | Recursively freezes objects and prototypes to prevent method overrides. |
+| **Console Data Harvesting** | Console Silencer & Plugin | Multi-line balanced parenthesis stripper and production console silencer. |
 
 ---
 

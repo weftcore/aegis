@@ -1,16 +1,19 @@
 /**
- * @weftcore/aegis - AI Reconnaissance Honeypot Traps
- * Sets up trap getters on the global window scope for common target names.
- * When an AI code agent (like REA) or automated scanner interrogates window properties,
- * the honeypot catches the reconnaissance attempt and fires a violation.
+ * @weftcore/aegis - Multi-Scope AI & Scanner Reconnaissance Honeypot Traps
+ * 
+ * Traps automated scrapers, AI code decompilers, and reverse-engineers inspecting:
+ * 1. Global window variables (e.g. apiKey, secretKey, adminToken, __BACKDOOR__)
+ * 2. Hidden DOM forms / decoy inputs
+ * 3. Synthetic poisoning payloads that return deceptive decoy credentials
  */
 
 export interface HoneypotOptions {
   trapNames?: string[];
-  onTrigger?: (trapName: string) => void;
+  enableDomTraps?: boolean;
+  onTrigger?: (trapName: string, detail?: string) => void;
 }
 
-const DEFAULT_HONEYPOT_TARGETS = [
+const DEFAULT_GLOBAL_TARGETS = [
   'apiKey',
   'apiSecret',
   'secretKey',
@@ -21,16 +24,21 @@ const DEFAULT_HONEYPOT_TARGETS = [
   '__BACKDOOR__',
   'debugAuth',
   'rawToken',
+  '__CONFIG_SECRET__',
+  'authOverride',
+  'rootAccess',
 ];
 
 export function installHoneypots(options: HoneypotOptions = {}): () => void {
   if (typeof window === 'undefined') return () => {};
 
-  const targets = options.trapNames || DEFAULT_HONEYPOT_TARGETS;
+  const targets = options.trapNames || DEFAULT_GLOBAL_TARGETS;
   const originalDescriptors = new Map<string, PropertyDescriptor | undefined>();
+  const cleanupFns: Array<() => void> = [];
 
+  // 1. Global Window Scanners
   for (const name of targets) {
-    if (name in window) continue; // Don't override real existing globals
+    if (name in window) continue; // Skip real legitimate globals
 
     try {
       originalDescriptors.set(name, Object.getOwnPropertyDescriptor(window, name));
@@ -39,25 +47,25 @@ export function installHoneypots(options: HoneypotOptions = {}): () => void {
         configurable: true,
         enumerable: false,
         get: () => {
-          options.onTrigger?.(name);
-          // Poison the returned payload so AI agents receive fake decoy credentials
+          options.onTrigger?.(name, 'read');
+          // Poison the returned payload with synthetic decoy tokens to track unauthorized replay attempts
           return {
             status: 'decoy_active',
             trapId: 'aegis_' + Math.random().toString(36).slice(2),
-            token: 'aegis_decoy_' + Date.now(),
+            token: 'aegis_decoy_' + Date.now().toString(36),
+            scope: 'internal_audit_only',
           };
         },
-        set: () => {
-          options.onTrigger?.(name + ':write');
+        set: (val) => {
+          options.onTrigger?.(name, `write:${typeof val}`);
         },
       });
     } catch {
-      // Ignore if strict environment forbids defining property on window
+      /* strict scope */
     }
   }
 
-  // Cleanup function
-  return () => {
+  cleanupFns.push(() => {
     for (const [name, desc] of originalDescriptors.entries()) {
       try {
         if (desc) {
@@ -69,6 +77,39 @@ export function installHoneypots(options: HoneypotOptions = {}): () => void {
         /* noop */
       }
     }
+  });
+
+  // 2. Hidden Decoy DOM Traps (Traps automated form scrapers & autofillers)
+  if (options.enableDomTraps !== false && typeof document !== 'undefined' && document.body) {
+    try {
+      const trapContainer = document.createElement('div');
+      trapContainer.setAttribute('aria-hidden', 'true');
+      trapContainer.style.position = 'absolute';
+      trapContainer.style.left = '-9999px';
+      trapContainer.style.opacity = '0';
+      trapContainer.style.pointerEvents = 'none';
+
+      const trapInput = document.createElement('input');
+      trapInput.type = 'text';
+      trapInput.name = 'admin_override_token';
+      trapInput.tabIndex = -1;
+      trapInput.autocomplete = 'off';
+
+      trapInput.addEventListener('change', () => {
+        options.onTrigger?.('dom-trap:admin_override_token', 'input-modified');
+      });
+
+      trapContainer.appendChild(trapInput);
+      document.body.appendChild(trapContainer);
+
+      cleanupFns.push(() => trapContainer.remove());
+    } catch {
+      /* noop */
+    }
+  }
+
+  return () => {
+    cleanupFns.forEach((fn) => fn());
+    cleanupFns.length = 0;
   };
 }
-
