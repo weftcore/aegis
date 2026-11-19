@@ -16,6 +16,10 @@ export interface SecurityGuardOptions {
   allowedOrigins?: RegExp | string[];
   /** Where to redirect if framed by an unauthorized host or upon severe security breach. */
   unauthorizedRedirectUrl?: string;
+  /** Allow embedding the app inside an iframe. Defaults to false. */
+  allowIFrame?: boolean;
+  /** Alias for allowIFrame. */
+  allowIframe?: boolean;
   /** Allow localhost/127.0.0.1 framing in development mode. Defaults to true. */
   allowLocalhostInDev?: boolean;
   /** Allow opening DevTools without triggering anti-debug traps, dimension checks, or shortcut blocks. Defaults to true on localhost/dev. */
@@ -87,10 +91,11 @@ export function initSecurityGuard(options: SecurityGuardOptions = {}): void {
   const allowDevTools = options.allowDevToolOpen ?? isDev;
 
   // Layer 1: Frame Guard (active in all modes)
-  if (options.allowedOrigins) {
+  if (options.allowedOrigins || options.allowIFrame !== undefined || options.allowIframe !== undefined) {
     enforceFrameGuard({
       allowedOrigins: options.allowedOrigins,
       redirectUrl: options.unauthorizedRedirectUrl,
+      allowIFrame: options.allowIFrame ?? options.allowIframe,
       allowLocalhostInDev: options.allowLocalhostInDev !== false,
     });
   }
@@ -177,12 +182,19 @@ export function destroySecurityGuard(): void {
 export function enforceFrameGuard(config: {
   allowedOrigins?: RegExp | string[];
   redirectUrl?: string;
+  allowIFrame?: boolean;
+  allowIframe?: boolean;
   allowLocalhostInDev?: boolean;
 }): void {
   if (typeof window === 'undefined') return;
 
   try {
     if (window.self === window.top) return; // Not embedded in an iframe
+
+    // If iframes are explicitly allowed, bypass frame protection
+    if (config.allowIFrame === true || config.allowIframe === true) {
+      return;
+    }
 
     const referrer = document.referrer ? new URL(document.referrer).origin : '';
     let allowed = false;
