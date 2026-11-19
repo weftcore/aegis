@@ -18,6 +18,8 @@ export interface SecurityGuardOptions {
   unauthorizedRedirectUrl?: string;
   /** Allow localhost/127.0.0.1 framing in development mode. Defaults to true. */
   allowLocalhostInDev?: boolean;
+  /** Allow opening DevTools without triggering anti-debug traps, dimension checks, or shortcut blocks. Defaults to true on localhost/dev. */
+  allowDevToolOpen?: boolean;
   /** Silence console.log/info/debug/table/dir in production. Defaults to true. */
   silenceConsole?: boolean;
   /** Run active multi-vector debugger and DevTools detection in production. Defaults to true. */
@@ -81,7 +83,8 @@ export function initSecurityGuard(options: SecurityGuardOptions = {}): void {
   _initialized = true;
   _options = options;
 
-  const isProd = !_isDev();
+  const isDev = _isDev();
+  const allowDevTools = options.allowDevToolOpen ?? isDev;
 
   // Layer 1: Frame Guard (active in all modes)
   if (options.allowedOrigins) {
@@ -99,8 +102,8 @@ export function initSecurityGuard(options: SecurityGuardOptions = {}): void {
     }
   }
 
-  // Production-only active defenses
-  if (isProd) {
+  // Anti-debugging, console silencing, & shortcuts: active ONLY when DevTools is NOT allowed
+  if (!allowDevTools) {
     // Layer 3: Console silencing
     if (options.silenceConsole !== false) {
       _silenceConsole();
@@ -115,12 +118,20 @@ export function initSecurityGuard(options: SecurityGuardOptions = {}): void {
       });
     }
 
-    // Layer 5: Prototype sealing & clean-iframe extraction prevention
+    // Layer 5: Block DevTools shortcuts and right-click
+    if (options.blockDevShortcuts !== false) {
+      _blockDevShortcuts();
+    }
+  }
+
+  // Production-only tamper & bot protections
+  if (!isDev) {
+    // Layer 6: Prototype sealing & clean-iframe extraction prevention
     if (options.antiSourceExtraction !== false) {
       _installAntiSourceExtraction();
     }
 
-    // Layer 6: Headless / automation detection & hardware evaluation
+    // Layer 7: Headless / automation detection & hardware evaluation
     if (options.antiHeadless !== false) {
       _detectHeadless();
       const botResult: BotDetectionResult = detectStealthBot();
@@ -129,17 +140,11 @@ export function initSecurityGuard(options: SecurityGuardOptions = {}): void {
       }
     }
 
-    // Layer 7: Block DevTools shortcuts and right-click
-    if (options.blockDevShortcuts !== false) {
-      _blockDevShortcuts();
-    }
-
     // Layer 8: AI Reconnaissance Honeypots
     if (options.antiAiScanners !== false) {
       _cleanupHoneypots = installHoneypots({
         onTrigger: (name, detail) => {
           _fireViolation('honeypot-triggered', `${name}:${detail || ''}`);
-          _onThreatDetected();
         },
       });
     }
@@ -272,7 +277,6 @@ export function startAntiDebug(options: AntiDebugOptions | number = 1500): numbe
           _workerHeartbeat?.postMessage('pong');
         } else if (e.data === 'detected') {
           _fireViolation('debugger-detected', 'worker-heartbeat-stalled');
-          _onThreatDetected();
         }
       };
       _cleanupListeners.push(() => {
@@ -292,7 +296,6 @@ export function startAntiDebug(options: AntiDebugOptions | number = 1500): numbe
       // When DevTools is docked to side or bottom, threshold typically exceeds 160px
       if (widthDiff > 160 || heightDiff > 160) {
         _fireViolation('devtools-opened', `docked: wDiff=${widthDiff}, hDiff=${heightDiff}`);
-        _onThreatDetected();
       }
     }
 
@@ -307,16 +310,11 @@ export function startAntiDebug(options: AntiDebugOptions | number = 1500): numbe
 
     if (elapsed > 80) {
       _fireViolation('debugger-detected', `debugger-latency=${elapsed.toFixed(0)}ms`);
-      _onThreatDetected();
     }
   };
 
   check();
   return window.setInterval(check, intervalMs);
-}
-
-function _onThreatDetected(): void {
-  // Notify violation handler; do not unilaterally delete user tokens from storage
 }
 
 // ─── Layer 5: Prototype Sealing & Anti-Source Extraction ───────
