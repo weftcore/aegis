@@ -1,6 +1,6 @@
 {
   "name": "@weftcore/aegis",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Universal client-side runtime security guard and anti-reverse-engineering suite. Protects against DevTools inspection, headless scraping, AI decompilers, source extraction, and unauthorized iframe embedding.",
   "type": "module",
   "main": "./dist/index.cjs",
